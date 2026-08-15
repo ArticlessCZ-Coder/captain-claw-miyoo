@@ -30,7 +30,11 @@ fi
 # device address and credentials, the player's own save, vendor blobs pulled off
 # a console, the local build tree, and the Czech-language internal log (the
 # public repo carries the translated docs/ENGINEERING_LOG.md instead).
-EXCLUDE='^\.vscode/|^device-libs/|SAVES\.XML|^Build_Release/|Claw Audio Test\.port|launch_audiotest\.sh|^PROJECT_STATUS\.md|^device-libs-upload/libSDL2-2\.0\.so\.0$'
+# Note the SAVES.XML rule is scoped to Build_Release, not global: the copy in
+# the package is the shipped *new game* state (level 1 only) and has to be
+# published, because the engine cannot start without a saves file. Excluding it
+# wholesale is what made the first public release fail to launch.
+EXCLUDE='^\.vscode/|^device-libs/|^Build_Release/|Claw Audio Test\.port|launch_audiotest\.sh|^PROJECT_STATUS\.md|^device-libs-upload/libSDL2-2\.0\.so\.0$'
 
 # Files the public repo owns its own version of, which a plain copy would
 # clobber: the player-facing README is English there and Czech here, and the
