@@ -1,7 +1,6 @@
 # Original commercial game data (Claw, 1997) - not ours to redistribute.
 # Users supply their own copy; see README.md.
-MiyooMiniPackage/Roms/PORTS/Games/Captain Claw/CLAW.REZ
-MiyooMiniPackage/Roms/PORTS/Captain Claw/CLAW.REZ
+CLAW.REZ
 
 # Vendor libraries pulled from your own console - see docs/BUILDING.md.
 device-libs/

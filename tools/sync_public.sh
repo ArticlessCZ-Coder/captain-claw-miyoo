@@ -35,7 +35,7 @@ EXCLUDE='^\.vscode/|^device-libs/|SAVES\.XML|^Build_Release/|Claw Audio Test\.po
 # Files the public repo owns its own version of, which a plain copy would
 # clobber: the player-facing README is English there and Czech here, and the
 # ignore rules differ (the public one also excludes saves and vendor blobs).
-EXCLUDE="$EXCLUDE"'|^\.gitignore$|^MiyooMiniPackage/Roms/PORTS/Captain Claw/README\.txt$'
+EXCLUDE="$EXCLUDE"'|^\.gitignore$|^MiyooMiniPackage/Roms/PORTS/Games/Captain Claw/README\.txt$'
 
 echo "== main repo"
 git ls-files | grep -vE "$EXCLUDE" > /tmp/sync-files.txt
@@ -43,7 +43,7 @@ tar -cf - -T /tmp/sync-files.txt | (cd "$PUBLIC_DIR/captain-claw-miyoo" && tar -
 
 # The published config must not carry experiment settings.
 sed -i 's|<LastImplementedLevel>[0-9]*</LastImplementedLevel>|<LastImplementedLevel>7</LastImplementedLevel>|' \
-    "$PUBLIC_DIR/captain-claw-miyoo/MiyooMiniPackage/Roms/PORTS/Captain Claw/config.xml"
+    "$PUBLIC_DIR/captain-claw-miyoo/MiyooMiniPackage/Roms/PORTS/Games/Captain Claw/config.xml"
 
 echo "== SDL patch"
 # Regenerated rather than copied: the public side ships our changes as a patch

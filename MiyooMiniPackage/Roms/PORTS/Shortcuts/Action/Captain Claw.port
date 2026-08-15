@@ -1,0 +1,18 @@
+#!/bin/sh
+# OnionOS port shortcut - this is what puts "Captain Claw" in the PORTS menu.
+# It hands off to OnionOS's standalone port launcher, which checks that the game
+# data is present, sets up the library path and runs the launch script.
+
+# main configuration :
+GameName="Captain Claw"
+GameDir="Captain Claw"
+GameExecutable="launch_claw.sh"
+GameDataFile="CLAW.REZ"
+KillAudioserver=0
+PerformanceMode=0
+
+# specific to this port :
+Arguments=""
+
+# running command line :
+/mnt/SDCARD/Emu/PORTS/launch_standalone.sh "$GameName" "$GameDir" "$GameExecutable" "$Arguments" "$GameDataFile" "$KillAudioserver" "$PerformanceMode"
