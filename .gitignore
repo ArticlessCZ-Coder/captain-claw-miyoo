@@ -1,0 +1,30 @@
+# Original commercial game data (Claw, 1997) - not ours to redistribute.
+# Users supply their own copy; see README.md.
+MiyooMiniPackage/Roms/PORTS/Games/Captain Claw/CLAW.REZ
+MiyooMiniPackage/Roms/PORTS/Captain Claw/CLAW.REZ
+
+# Vendor libraries pulled from your own console - see docs/BUILDING.md.
+device-libs/
+
+# Save files are per-player state, not project content.
+SAVES.XML
+crashlogs/
+log.txt
+log.prev.txt
+
+# Prebuilt toolchain tarball - large, redownloadable (see Dockerfile.miyoo)
+toolchain/*.tar.xz
+
+# Build output
+build-miyoo/
+Build_Release/
+custom-sdl2-out/
+*.log
+
+# Upstream sources are their own repositories - see README.md
+openclaw-src/
+sdl2-miyoo-src/
+
+# Editor / local tooling
+.vscode/
+.claude/

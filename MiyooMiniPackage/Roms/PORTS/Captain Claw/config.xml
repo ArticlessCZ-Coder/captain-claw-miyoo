@@ -1,0 +1,102 @@
+<Configuration>
+    <Display>
+        <Size width="640" height="480" />
+        <Scale>1</Scale>
+        <UseVerticalSync>false</UseVerticalSync>
+        <IsFullscreen>true</IsFullscreen>
+        <IsFullscreenDesktop>false</IsFullscreenDesktop>
+    </Display>
+    <Audio>
+        <!-- Every sound in CLAW.REZ is 22050 Hz mono (verified by reading the
+             WAV headers out of the archive), so opening the mixer at 44100
+             made SDL_mixer resample every single one in software on load -
+             measured at ~110 ms per file, whether it was 8 kB or 100 kB, and
+             paid again mid-frame the first time each sound is played. The
+             device's MI_AO supports 22050 natively
+             (E_MI_AUDIO_SAMPLE_RATE_22050), so this is a straight removal of
+             work, not a quality trade. Channels stay at 2 to keep panning;
+             mono to stereo is a cheap duplication next to resampling. -->
+        <Frequency>22050</Frequency>
+        <SoundChannels>2</SoundChannels>
+        <MixingChannels>32</MixingChannels>
+        <!-- Buffer length is samples/frequency, so halving the mixer rate above
+             doubled it: 1024 at 44100 was 23 ms, at 22050 it is 46 ms, which is
+             audible as a lag between smashing a crate and hearing it. 512 puts
+             the latency back where it was, and mixing at 22050 costs less CPU
+             per callback than 44100 did, so the smaller buffer is affordable. -->
+        <ChunkSize>512</ChunkSize>
+        <SoundVolume>80</SoundVolume>
+        <MusicVolume>60</MusicVolume>
+        <SoundOn>true</SoundOn>
+        <!-- The game's music is MIDI (.XMI) and SDL_mixer is built here without
+             a synth on purpose - FluidSynth would pull in the JACK/PulseAudio
+             stack this port exists to avoid. Every track therefore ends in
+             "Unrecognized audio format" after being read off the SD card
+             mid-frame, which is a stutter for no sound at all. Off until
+             something can actually play it. -->
+        <MusicOn>false</MusicOn>
+    </Audio>
+    <Font>
+        <Fontt>clacon.ttf</Fontt>
+        <ConsoleFont font="clacon.ttf" size="16" />
+    </Font>
+    <Assets>
+        <AssetsFolder>./</AssetsFolder>
+        <RezArchive>CLAW.REZ</RezArchive>
+        <CustomArchive>ASSETS.ZIP</CustomArchive>
+        <ResourceCacheSize>16</ResourceCacheSize>
+        <TempDir>./saves/</TempDir>
+        <SavesFile>SAVES.XML</SavesFile>
+    </Assets>
+    <Console>
+        <BackgroundImagePath>console02.tga</BackgroundImagePath>
+        <StretchBackgroundImage></StretchBackgroundImage>
+        <WidthRatio>1.0</WidthRatio>
+        <HeightRatio>0.5</HeightRatio>
+        <LineSeparatorHeight>3</LineSeparatorHeight>
+        <CommandPromptOffsetY>10</CommandPromptOffsetY>
+        <ConsoleAnimationSpeed>0.7</ConsoleAnimationSpeed>
+        <FontPath>clacon.ttf</FontPath>
+        <FontColor r="255" g="255" b="255" />
+        <FontHeight>16</FontHeight>
+        <LeftOffset>5</LeftOffset>
+        <CommandPrompt>> </CommandPrompt>
+    </Console>
+    <!-- EXPERIMENT, not a release setting. The engine defaults to 7 as the last
+         implemented level, but the data for 8-13 is all present: level metadata,
+         per-level actor prototypes, the ActorPrototype_LevelN_* enums, and even
+         the boss encounters (Marrow, Aquatis, Gabriel, RedTail) which only
+         appear in those later levels. That flag looks like caution rather than a
+         hard limit, so this raises it to find out what actually breaks - the log
+         names any missing game logic ("Unknown logic: X", object skipped), and a
+         crash or a hang now produces a report either way. Put back to 7 if the
+         answer is "too much". -->
+    <DebugOptions>
+        <LastImplementedLevel>7</LastImplementedLevel>
+    </DebugOptions>
+    <GlobalOptions>
+        <CpuDelay>0</CpuDelay>
+        <MaxJumpSpeed>8.8</MaxJumpSpeed>
+        <MaxFallSpeed>14.0</MaxFallSpeed>
+        <IdleSoundQuoteInterval>15000</IdleSoundQuoteInterval>
+        <PlatformSpeedModifier>0.015</PlatformSpeedModifier>
+        <MaxJumpHeight>142</MaxJumpHeight>
+        <PowerupMaxJumpHeight>200</PowerupMaxJumpHeight>
+        <SkipMenu>false</SkipMenu>
+        <StartLookUpOrDownTime>1500</StartLookUpOrDownTime>
+        <FreezeTime>2000</FreezeTime>
+        <MaxLookUpOrDownDistance>250</MaxLookUpOrDownDistance>
+        <LookUpOrDownSpeed>250</LookUpOrDownSpeed>
+        <ClawRunningSpeed>5</ClawRunningSpeed>
+        <SpringBoardSpringHeight>UNUSED</SpringBoardSpringHeight>
+        <SpringBoardSpringSpeed>11</SpringBoardSpringSpeed>
+        <!-- Both of these debug overlays re-render text and rebuild an SDL
+             texture on this handheld's software renderer: the FPS counter once
+             a second, the position readout on *every single frame* (its update
+             runs unconditionally from ScreenElementHUD::VOnUpdate). Off by
+             default - they cost real frames on a device that has none to
+             spare. Set to true only when measuring. -->
+        <ShowFps>false</ShowFps>
+        <ShowPosition>false</ShowPosition>
+    </GlobalOptions>
+</Configuration>

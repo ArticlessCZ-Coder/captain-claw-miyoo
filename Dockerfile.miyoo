@@ -1,0 +1,33 @@
+FROM debian:bullseye-slim
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get -y update && apt-get -y install \
+    build-essential \
+    cmake \
+    git \
+    xz-utils \
+    wget \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Native Miyoo Mini toolchain (GCC 8.3 + sysroot with libSDL2, libmi_*, ALSA — no PulseAudio/JACK/DBus/X11)
+COPY toolchain/miyoomini-toolchain.tar.xz /opt/miyoomini-toolchain.tar.xz
+RUN cd /opt && tar xf miyoomini-toolchain.tar.xz && rm miyoomini-toolchain.tar.xz
+
+ENV PATH="/opt/miyoomini-toolchain/usr/bin:${PATH}"
+ENV CROSS_COMPILE="/opt/miyoomini-toolchain/usr/bin/arm-linux-gnueabihf-"
+ENV PREFIX="/opt/miyoomini-toolchain/usr/arm-linux-gnueabihf/sysroot/usr"
+
+# Native libSDL2-2.0.so.0 pulled from the device (/mnt/SDCARD/.tmp_update/lib/parasyte/)
+# plus SDL2_gfx/SDL2_ttf/SDL2_image(PNG)/SDL2_mixer(WAV+OGG) cross-compiled against it —
+# see build-scripts/build_sdl_satellites.sh for why (clean deps, no PulseAudio/JACK/DBus/X11).
+COPY device-libs/libSDL2-2.0.so.0 /device-libs/libSDL2-2.0.so.0
+COPY build-scripts/build_sdl_satellites.sh /build-scripts/build_sdl_satellites.sh
+RUN bash /build-scripts/build_sdl_satellites.sh
+
+WORKDIR /workspace
+
+CMD ["/bin/bash", "./build_miyoo.sh"]

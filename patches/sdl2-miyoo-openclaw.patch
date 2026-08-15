@@ -1,0 +1,991 @@
+diff --git a/sdl2/include/SDL_mmiyoo_ext.h b/sdl2/include/SDL_mmiyoo_ext.h
+new file mode 100644
+index 00000000..17a79c31
+--- /dev/null
++++ b/sdl2/include/SDL_mmiyoo_ext.h
+@@ -0,0 +1,48 @@
++/*
++  Miyoo Mini platform extension — not part of stock SDL2.
++
++  Lets a game mark a texture as using simple colorkey-cutout transparency
++  (one fully-transparent background color, no real per-pixel alpha) so the
++  "mmiyoo" render backend can keep it in RGB565 (half the memory of
++  ARGB8888) and use the SigmaStar MI_GFX 2D block's own hardware colorkey
++  matching instead of alpha blending. Only meaningful when SDL_VIDEODRIVER=
++  mmiyoo / SDL_RENDER_DRIVER=mmiyoo are active; harmless no-op call on any
++  other platform/backend if guarded by #ifdef MIYOO_MINI at the call site,
++  since this header (and the symbol) only exists in this custom build.
++*/
++#ifndef SDL_mmiyoo_ext_h_
++#define SDL_mmiyoo_ext_h_
++
++/* Deliberately #include-free (no SDL_stdinc.h/SDL_render.h/etc): the game may
++ * already have a *different* SDL2 header tree in its include path by the
++ * time it includes this file (e.g. a bundled ThirdParty/SDL2 copy alongside
++ * this build's own sysroot headers), and pulling in this build's copies of
++ * those headers redefines every SDL_* type/inline function against whatever
++ * that other tree already declared (SDL_Texture, SDL_DUMMY_ENUM,
++ * SDL_memcpy4, ...). Stick to plain C types and an opaque struct tag —
++ * "unsigned int" instead of Uint32 for the same reason.
++ *
++ * Also deliberately not wrapped through SDL_DYNAPI (SDL_dynapi_overrides.h /
++ * SDL_dynapi_procs.h) — it's not part of the stock SDL2 API surface, just a
++ * plain exported symbol in this custom libSDL2 that the game links against
++ * directly. */
++struct SDL_Texture;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ *  Mark `texture` as using colorkey-cutout transparency: pixels matching
++ *  `colorkey` (packed in the texture's own pixel format, e.g. via
++ *  SDL_MapRGB against an RGB565 SDL_PixelFormat) are skipped by MI_GFX at
++ *  blit time. Returns 0 on success, -1 if the texture has no mmiyoo
++ *  driverdata (e.g. wrong renderer backend).
++ */
++extern int MMIYOO_SetTextureColorKey(struct SDL_Texture *texture, unsigned int colorkey);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SDL_mmiyoo_ext_h_ */
+diff --git a/sdl2/src/audio/mmiyoo/SDL_audio_mmiyoo.c b/sdl2/src/audio/mmiyoo/SDL_audio_mmiyoo.c
+index 480ed6e0..543933a7 100644
+--- a/sdl2/src/audio/mmiyoo/SDL_audio_mmiyoo.c
++++ b/sdl2/src/audio/mmiyoo/SDL_audio_mmiyoo.c
+@@ -104,7 +104,9 @@ static int MMIYOO_OpenDevice(_THIS, void *handle, const char *devname, int iscap
+ #ifdef MMIYOO
+     stSetAttr.eBitwidth = E_MI_AUDIO_BIT_WIDTH_16;
+     stSetAttr.eWorkmode = E_MI_AUDIO_MODE_I2S_MASTER;
+-    stSetAttr.u32FrmNum = 6;
++    /* Fewer, so the queue the pacing in MMIYOO_PlayDevice keeps short cannot be
++     * deep to begin with. 3 frames is ~70 ms at the game's settings. */
++    stSetAttr.u32FrmNum = 3;
+     stSetAttr.u32PtNumPerFrm = this->spec.samples;
+     stSetAttr.u32ChnCnt = this->spec.channels;
+     stSetAttr.eSoundmode = this->spec.channels == 2 ? E_MI_AUDIO_SOUND_MODE_STEREO : E_MI_AUDIO_SOUND_MODE_MONO;
+@@ -140,7 +142,13 @@ static int MMIYOO_OpenDevice(_THIS, void *handle, const char *devname, int iscap
+     stAoChn0OutputPort0.u32DevId = AoDevId;
+     stAoChn0OutputPort0.u32ChnId = AoChn;
+     stAoChn0OutputPort0.u32PortId = 0;
+-    MI_SYS_SetChnOutputPortDepth(&stAoChn0OutputPort0, 12, 13);
++    /* Left at the driver's original depth on purpose: asking for a shallower
++     * one (2,3) is rejected outright (-1610014717), and the latency it was
++     * meant to cut is handled by pacing in MMIYOO_PlayDevice instead. */
++    miret = MI_SYS_SetChnOutputPortDepth(&stAoChn0OutputPort0, 12, 13);
++    if(miret != MI_SUCCESS) {
++        printf(PREFIX"SetChnOutputPortDepth failed: %d\n", miret);
++    }
+ #endif
+ 
+ #ifdef TRIMUI
+@@ -172,7 +180,43 @@ static void MMIYOO_PlayDevice(_THIS)
+     aoTestFrame.apVirAddr[0] = this->hidden->mixbuf;
+     aoTestFrame.apVirAddr[1] = NULL;
+     MI_AO_SendFrame(AoDevId, AoChn, &aoTestFrame, 1);
+-    usleep(((stSetAttr.u32PtNumPerFrm * 1000) / stSetAttr.eSamplerate - 10) * 1000);
++
++    /* Pace against MI_AO's queue rather than the clock.
++     *
++     * This used to sleep for the frame duration minus a fixed 10 ms and assume
++     * that matched playback. It does not: a frame holds 23.2 ms of audio at the
++     * game's settings but was handed over every ~13 ms plus callback time, so
++     * the driver produced roughly 15% faster than the hardware consumed. The
++     * queue filled steadily - measured going 14544 -> 26752 -> 38968 -> 51176
++     * -> 65024 bytes over five seconds - and then stayed pinned at its
++     * 65536-byte ceiling. A permanently full queue is a permanent delay of its
++     * entire depth, about 0.7s between an action and its sound, and it is why
++     * shrinking the SDL buffer, u32FrmNum and the mixer rate all changed
++     * nothing audible: the queue simply refilled to the same ceiling.
++     *
++     * Waiting until only a few frames are left caps the latency there, and
++     * self-corrects for any frame size or sample rate. The iteration cap means
++     * a failing QueryChnStat degrades to the old fixed pacing instead of
++     * hanging the audio thread. */
++    {
++        const MI_U32 targetBytes = (MI_U32)this->hidden->mixlen * 3;   /* ~70 ms */
++        int guard = 0;
++
++        for (guard = 0; guard < 100; guard++) {
++            MI_AO_ChnState_t stState;
++
++            if (MI_AO_QueryChnStat(AoDevId, AoChn, &stState) != MI_SUCCESS) {
++                usleep(((stSetAttr.u32PtNumPerFrm * 1000) / stSetAttr.eSamplerate - 10) * 1000);
++                break;
++            }
++
++            if (stState.u32ChnBusyNum <= targetBytes) {
++                break;
++            }
++
++            usleep(2000);
++        }
++    }
+ #endif
+ 
+ #ifdef TRIMUI
+diff --git a/sdl2/src/render/SDL_render.c b/sdl2/src/render/SDL_render.c
+index d88a247d..9a72efd4 100644
+--- a/sdl2/src/render/SDL_render.c
++++ b/sdl2/src/render/SDL_render.c
+@@ -55,6 +55,7 @@ this should probably be removed at some point in the future.  --ryan. */
+ #define CHECK_TEXTURE_MAGIC(texture, retval) \
+     if (!texture || texture->magic != &texture_magic) { \
+         SDL_SetError("%s, Invalid texture", __func__); \
++        SDL_Log("[TEXDBG] invalid texture %p, called from return address %p", (void*)texture, __builtin_return_address(0)); \
+         return retval; \
+     }
+ 
+diff --git a/sdl2/src/render/mmiyoo/SDL_render_mmiyoo.c b/sdl2/src/render/mmiyoo/SDL_render_mmiyoo.c
+index bd3737cf..9d6f72f0 100644
+--- a/sdl2/src/render/mmiyoo/SDL_render_mmiyoo.c
++++ b/sdl2/src/render/mmiyoo/SDL_render_mmiyoo.c
+@@ -41,6 +41,8 @@ typedef struct MMIYOO_TextureData {
+     unsigned int bits;
+     unsigned int format;
+     unsigned int pitch;
++    SDL_bool has_colorkey;
++    Uint32 colorkey;
+ } MMIYOO_TextureData;
+ 
+ typedef struct {
+@@ -50,14 +52,6 @@ typedef struct {
+     SDL_bool vsync;
+ } MMIYOO_RenderData;
+ 
+-#define MAX_TEXTURE 10
+-
+-struct _NDS_TEXTURE {
+-    int pitch;
+-    const void *pixels;
+-    SDL_Texture *texture;
+-};
+-
+ extern GFX gfx;
+ extern MMIYOO_EventInfo evt;
+ extern SDL_Surface *fps_info;
+@@ -69,46 +63,23 @@ extern int show_fps;
+ extern int down_scale;
+ 
+ int need_reload_bg = 0;
+-static int threading_mode = 0;
+-static struct _NDS_TEXTURE ntex[MAX_TEXTURE] = {0};
+-
+-static int update_texture(void *chk, void *new, const void *pixels, int pitch)
+-{
+-    int cc = 0;
+-
+-    for (cc=0; cc<MAX_TEXTURE; cc++) {
+-        if (ntex[cc].texture == chk) {
+-            ntex[cc].texture = new;
+-            ntex[cc].pixels = pixels;
+-            ntex[cc].pitch = pitch;
+-            return cc;
+-        }
+-    }
+-    return -1;
+-}
+ 
++/* Originally a fixed-size (MAX_TEXTURE=10) global array, linearly scanned by
++ * SDL_Texture* pointer on every blit/update. SDL_Texture already carries a
++ * driverdata slot per-texture (set in MMIYOO_CreateTexture) — use that
++ * directly instead: no cap on live textures, and no O(n) scan per draw call. */
+ const void* get_pixels(void *chk)
+ {
+-    int cc = 0;
+-
+-    for (cc=0; cc<MAX_TEXTURE; cc++) {
+-        if (ntex[cc].texture == chk) {
+-            return ntex[cc].pixels;
+-        }
+-    }
+-    return NULL;
++    SDL_Texture *texture = (SDL_Texture *)chk;
++    MMIYOO_TextureData *data = texture ? (MMIYOO_TextureData *)texture->driverdata : NULL;
++    return data ? data->data : NULL;
+ }
+ 
+ static int get_pitch(void *chk)
+ {
+-    int cc = 0;
+-
+-    for (cc=0; cc<MAX_TEXTURE; cc++) {
+-        if (ntex[cc].texture == chk) {
+-            return ntex[cc].pitch;
+-        }
+-    }
+-    return -1;
++    SDL_Texture *texture = (SDL_Texture *)chk;
++    MMIYOO_TextureData *data = texture ? (MMIYOO_TextureData *)texture->driverdata : NULL;
++    return data ? (int)data->pitch : -1;
+ }
+ 
+ static void MMIYOO_WindowEvent(SDL_Renderer *renderer, const SDL_WindowEvent *event)
+@@ -149,10 +120,18 @@ static int MMIYOO_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+         return SDL_OutOfMemory();
+     }
+ 
+-    mmiyoo_texture->data = SDL_calloc(1, mmiyoo_texture->size);
+     texture->driverdata = mmiyoo_texture;
+-    update_texture(NULL, texture, NULL, 0);
+-    GFX_Clear();
++
++    /* Removed GFX_Clear() here: it zeroes the whole physical framebuffer, a
++     * leftover from when this driver only ever held one fullscreen texture
++     * (a new texture meant a new emulator-core frame source, so wiping the
++     * screen made sense). Now that many textures live concurrently and get
++     * created mid-frame (e.g. RenderLoadingScreen creates two small progress
++     * bar textures after already blitting the loading background), this call
++     * was wiping out everything already blitted that frame before the next
++     * draw call landed - only whatever was drawn last after the final
++     * texture creation in a frame ever stayed visible. */
++
+     return 0;
+ }
+ 
+@@ -165,9 +144,37 @@ static int MMIYOO_LockTexture(SDL_Renderer *renderer, SDL_Texture *texture, cons
+     return 0;
+ }
+ 
++/* Copy the caller-supplied pixels into our own buffer rather than just
++ * remembering their pointer (the original ntex[]-based tracking stored a
++ * bare reference to the caller's buffer, which is only guaranteed valid for
++ * the duration of this call — using it later, e.g. from QueueCopy on the
++ * next frame, would read freed/stale memory). Bytes-per-pixel matches
++ * mmiyoo_texture->bits (16 or 32), set in MMIYOO_CreateTexture. */
+ static int MMIYOO_UpdateTexture(SDL_Renderer *renderer, SDL_Texture *texture, const SDL_Rect *rect, const void *pixels, int pitch)
+ {
+-    update_texture(texture, texture, pixels, pitch);
++    MMIYOO_TextureData *mmiyoo_texture = (MMIYOO_TextureData*)texture->driverdata;
++    int bpp = mmiyoo_texture->bits / 8;
++    int row;
++
++    if (!mmiyoo_texture || !pixels) {
++        return 0;
++    }
++
++    /* These pixels may be what GFX_CopyEx currently has staged in the DMA
++     * buffer; that copy is now stale. */
++    GFX_InvalidateStagingCache();
++
++    if (rect->x == 0 && rect->y == 0 && (unsigned)rect->w == mmiyoo_texture->width && (unsigned)rect->h == mmiyoo_texture->height
++        && (unsigned)pitch == mmiyoo_texture->pitch) {
++        SDL_memcpy(mmiyoo_texture->data, pixels, mmiyoo_texture->size);
++        return 0;
++    }
++
++    for (row = 0; row < rect->h; row++) {
++        Uint8 *dst = (Uint8 *)mmiyoo_texture->data + (rect->y + row) * mmiyoo_texture->pitch + rect->x * bpp;
++        const Uint8 *src = (const Uint8 *)pixels + row * pitch;
++        SDL_memcpy(dst, src, rect->w * bpp);
++    }
+     return 0;
+ }
+ 
+@@ -210,52 +217,66 @@ static int MMIYOO_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd,
+     return 0;
+ }
+ 
++/* cmd carries the fill color (data.color.r/g/b/a); executed immediately like
++ * QueueCopy below rather than deferred to RunCommandQueue, since nothing in
++ * this driver defers — every Queue* call blits/fills straight to the
++ * framebuffer via the MI_GFX hardware 2D block. */
+ static int MMIYOO_QueueFillRects(SDL_Renderer *renderer, SDL_RenderCommand *cmd, const SDL_FRect *rects, int count)
+ {
++    int i;
++    Uint32 color = (cmd->data.color.a << 24) | (cmd->data.color.r << 16) | (cmd->data.color.g << 8) | cmd->data.color.b;
++
++    for (i = 0; i < count; i++) {
++        SDL_Rect dst = {(int)rects[i].x, (int)rects[i].y, (int)rects[i].w, (int)rects[i].h};
++        GFX_FillRect(dst, color);
++    }
+     return 0;
+ }
+ 
++/* Was two things bundled together and both broken for a multi-sprite 2D
++ * engine: (1) any srcrect exactly 32x32 was skipped outright (a hardcoded
++ * workaround for some other app's cursor icon — Claw's own tile-sized
++ * sprites are routinely 32x32 and would silently vanish), and (2) instead of
++ * blitting immediately, most draws were stashed into a 2-slot gfx.thread[]
++ * queue that only ever composites slot 0 on present — every draw call after
++ * the first in a frame just overwrote the previous one. That's fine for a
++ * single fullscreen emulator-core framebuffer (this driver's original use
++ * case) but drops everything except the last sprite drawn each frame for a
++ * scene made of many sprites. Blit synchronously, in draw order, every time. */
+ static int MMIYOO_QueueCopy(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture, const SDL_Rect *srcrect, const SDL_FRect *dstrect)
+ {
+-    int idx = 0;
+-
+-    if ((srcrect->w == 32) && (srcrect->h == 32)) {
+-        return 0;
+-    }
+-
+-    if ((evt.mode == MMIYOO_MOUSE_MODE) || (srcrect->w == 800)) {
+-        threading_mode = 0;
+-        if (srcrect->w == 800) {
+-            usleep(100000);
+-        }
+-        return My_QueueCopy(texture, get_pixels(texture), srcrect, dstrect);
+-    }
+-    
+-    threading_mode = 1;
+-    if ((dstrect->w == 160.0) && (dstrect->h == 120.0)){
+-        idx = (dstrect->x + dstrect->y) ? 1 : 0;
+-    }
+-
+-    gfx.thread[idx].texture = texture;
+-    gfx.thread[idx].srt.x = srcrect->x;
+-    gfx.thread[idx].srt.y = srcrect->y;
+-    gfx.thread[idx].srt.w = srcrect->w;
+-    gfx.thread[idx].srt.h = srcrect->h;
+-    gfx.thread[idx].drt.x = dstrect->x;
+-    gfx.thread[idx].drt.y = dstrect->y;
+-    gfx.thread[idx].drt.w = dstrect->w;
+-    gfx.thread[idx].drt.h = dstrect->h;
+-    return 0;
++    return My_QueueCopy(texture, get_pixels(texture), srcrect, dstrect, E_MI_GFX_MIRROR_NONE);
+ }
+ 
+-int My_QueueCopy(SDL_Texture *texture, const void *pixels, const SDL_Rect *srcrect, const SDL_FRect *dstrect)
++int My_QueueCopy(SDL_Texture *texture, const void *pixels, const SDL_Rect *srcrect, const SDL_FRect *dstrect, int mirror)
+ {
+     int pitch = 0;
+-    SDL_Rect dst = {dstrect->x, dstrect->y, FB_W, FB_H}; //dstrect->w, dstrect->h};
+-    SDL_Rect src = {srcrect->x, srcrect->y, srcrect->w, srcrect->h};
++    int use_colorkey = 0;
++    Uint32 colorkey = 0;
++    int dx, dy, dw, dh;
++    int sx, sy, sw, sh;
++    int flip_x, flip_y, cut, src_cut;
++    double scale_x, scale_y;
++    MMIYOO_TextureData *tex_data = texture ? (MMIYOO_TextureData *)texture->driverdata : NULL;
++    /* MI_GFX_BitBlit's eRotate rotates the blitted image in place within the
++     * dst rect given, it does not also rotate that rect's position around
++     * the canvas — so with every blit rotated 180 (the panel is mounted
++     * upside down), the target position must be pre-flipped too, same as
++     * GFX_FillRect does for QuickFill. Invisible for a fullscreen dst rect
++     * (flipping x=0,y=0,w=FB_W,h=FB_H around the canvas center is a no-op),
++     * which is why this went unnoticed until individual sprites/menu items
++     * needed real positions: top and bottom appeared swapped, and "down"
++     * moved the selection up, because everything but the background was
++     * landing at its vertically (and horizontally) mirrored position. */
++    SDL_Rect dst, src;
++
++    if (tex_data && tex_data->has_colorkey) {
++        use_colorkey = 1;
++        colorkey = tex_data->colorkey;
++    }
+ 
+     pitch = get_pitch(texture);
+-    if ((pitch == 0) || (pixels == NULL)) {
++    if ((pitch <= 0) || (pixels == NULL)) {
+         return 0;
+     }
+ 
+@@ -263,18 +284,156 @@ int My_QueueCopy(SDL_Texture *texture, const void *pixels, const SDL_Rect *srcre
+     evt.mouse.miny = dstrect->y;
+     evt.mouse.maxx = evt.mouse.minx + dstrect->w;
+     evt.mouse.maxy = evt.mouse.miny + dstrect->h;
+-    if (0 && (evt.mode == MMIYOO_MOUSE_MODE)) {
+-        draw_pen(pixels, src.w, pitch);
++
++    dx = (int)dstrect->x;
++    dy = (int)dstrect->y;
++    dw = (int)dstrect->w;
++    dh = (int)dstrect->h;
++    sx = srcrect->x;
++    sy = srcrect->y;
++    sw = srcrect->w;
++    sh = srcrect->h;
++
++    if ((dw <= 0) || (dh <= 0) || (sw <= 0) || (sh <= 0)) {
++        return 0;
++    }
++
++    /* Clip to the framebuffer. Nothing did this before, so the moment anything
++     * straddled a screen edge - which in a scrolling game is true of most tiles
++     * and sprites on every frame, but never happened in the menu where every
++     * element sits fully on screen - MI_GFX_BitBlit was handed a destination
++     * rect starting off-screen (a sprite at x=620 w=64 becomes x=-44 once the
++     * 180-degree panel flip below is applied) and the blit never came back.
++     *
++     * Clipping is done here in logical, pre-rotation space and the rotation is
++     * applied afterwards: MI_GFX maps the whole source rect onto the whole
++     * destination rect, so as long as both are trimmed consistently the
++     * rotation still lands correctly. Which side of the *source* to trim does
++     * depend on the mirror flag though, since a mirrored blit maps the source's
++     * far edge to the destination's near edge. */
++    scale_x = (double)sw / (double)dw;
++    scale_y = (double)sh / (double)dh;
++    flip_x = (mirror == E_MI_GFX_MIRROR_HORIZONTAL) || (mirror == E_MI_GFX_MIRROR_BOTH);
++    flip_y = (mirror == E_MI_GFX_MIRROR_VERTICAL) || (mirror == E_MI_GFX_MIRROR_BOTH);
++
++    if (dx < 0) {
++        cut = -dx;
++        src_cut = (int)(cut * scale_x);
++        dx = 0;
++        dw -= cut;
++        sw -= src_cut;
++        if (!flip_x) {
++            sx += src_cut;
++        }
++    }
++    if (dy < 0) {
++        cut = -dy;
++        src_cut = (int)(cut * scale_y);
++        dy = 0;
++        dh -= cut;
++        sh -= src_cut;
++        if (!flip_y) {
++            sy += src_cut;
++        }
++    }
++    if ((dx + dw) > FB_W) {
++        cut = (dx + dw) - FB_W;
++        src_cut = (int)(cut * scale_x);
++        dw -= cut;
++        sw -= src_cut;
++        if (flip_x) {
++            sx += src_cut;
++        }
++    }
++    if ((dy + dh) > FB_H) {
++        cut = (dy + dh) - FB_H;
++        src_cut = (int)(cut * scale_y);
++        dh -= cut;
++        sh -= src_cut;
++        if (flip_y) {
++            sy += src_cut;
++        }
++    }
++
++    /* Entirely off screen, or clipped away to nothing. */
++    if ((dw <= 0) || (dh <= 0) || (sw <= 0) || (sh <= 0)) {
++        return 0;
+     }
+ 
+-    GFX_Copy(pixels, src, dst, pitch, 0, E_MI_GFX_ROTATE_180);
++    /* MI_GFX_BitBlit's eRotate rotates the blitted image in place within the
++     * dst rect given, it does not also rotate that rect's position around
++     * the canvas - so with every blit rotated 180 (the panel is mounted
++     * upside down), the target position must be pre-flipped too, same as
++     * GFX_FillRect does for QuickFill. Invisible for a fullscreen dst rect
++     * (flipping x=0,y=0,w=FB_W,h=FB_H around the canvas center is a no-op),
++     * which is why this went unnoticed until individual sprites/menu items
++     * needed real positions: top and bottom appeared swapped, and "down"
++     * moved the selection up, because everything but the background was
++     * landing at its vertically (and horizontally) mirrored position. */
++    dst.x = FB_W - dx - dw;
++    dst.y = FB_H - dy - dh;
++    dst.w = dw;
++    dst.h = dh;
++
++    src.x = sx;
++    src.y = sy;
++    src.w = sw;
++    src.h = sh;
++
++    GFX_CopyEx(pixels, src, dst, pitch, tex_data ? (int)(tex_data->bits / 8) : 4,
++        0, E_MI_GFX_ROTATE_180, mirror, use_colorkey, colorkey);
+     return 0;
+ }
+ 
++/* Platform extension (not stock SDL2 API): let the game mark a texture as
++ * using simple colorkey-cutout transparency (RGB565, one fully-transparent
++ * background color) rather than real per-pixel alpha. See
++ * Image::CreatePcxImage in openclaw-src — it deliberately builds such
++ * textures directly instead of going through SDL_CreateTextureFromSurface,
++ * which would force an ARGB8888 promotion (SDL_CreateTextureFromSurface
++ * treats any surface with SDL_HasColorKey() as needing alpha) and double
++ * the memory for what's the overwhelming majority of the game's sprite art. */
++/* This whole library is built with -fvisibility=hidden by default (SDL2's
++ * own configure.ac), so a plain function definition stays internal/hidden
++ * from the dynamic symbol table unless explicitly marked default-visibility
++ * — same attribute SDL2's own DECLSPEC macro expands to on this platform. */
++__attribute__((visibility("default")))
++int MMIYOO_SetTextureColorKey(SDL_Texture *texture, Uint32 colorkey)
++{
++    MMIYOO_TextureData *tex_data = texture ? (MMIYOO_TextureData *)texture->driverdata : NULL;
++
++    if (!tex_data) {
++        return -1;
++    }
++
++    tex_data->has_colorkey = SDL_TRUE;
++    tex_data->colorkey = colorkey;
++    return 0;
++}
++
++/* SDL_RenderCopyEx is what draws every actor and HUD element (see
++ * ActorSceneNode.cpp/HUDSceneNode.cpp) whenever a sprite is horizontally
++ * mirrored, which for a platformer where the character/enemies turn around
++ * is most of the time — this was a plain no-op, so anything mirrored simply
++ * never appeared. angle/center are ignored (no rotate-by-arbitrary-angle
++ * support in MI_GFX_BitBlit's Opt struct, only 0/90/180/270 + mirror), which
++ * matches what OpenClaw actually needs: it only ever passes angle=0. */
+ static int MMIYOO_QueueCopyEx(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
+     const SDL_Rect *srcrect, const SDL_FRect *dstrect, const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip)
+ {
+-    return 0;
++    int mirror = E_MI_GFX_MIRROR_NONE;
++
++    if ((flip & SDL_FLIP_HORIZONTAL) && (flip & SDL_FLIP_VERTICAL)) {
++        mirror = E_MI_GFX_MIRROR_BOTH;
++    }
++    else if (flip & SDL_FLIP_HORIZONTAL) {
++        mirror = E_MI_GFX_MIRROR_HORIZONTAL;
++    }
++    else if (flip & SDL_FLIP_VERTICAL) {
++        mirror = E_MI_GFX_MIRROR_VERTICAL;
++    }
++
++    return My_QueueCopy(texture, get_pixels(texture), srcrect, dstrect, mirror);
+ }
+ 
+ static int MMIYOO_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, void *vertices, size_t vertsize)
+@@ -287,14 +446,11 @@ static int MMIYOO_RenderReadPixels(SDL_Renderer *renderer, const SDL_Rect *rect,
+     return SDL_Unsupported();
+ }
+ 
++/* QueueCopy/QueueCopyEx/QueueFillRects now blit synchronously as each is
++ * called, so all that's left to do at present time is the actual page flip. */
+ static void MMIYOO_RenderPresent(SDL_Renderer *renderer)
+ {
+-    if (threading_mode > 0) {
+-        gfx.action = GFX_ACTION_FLIP;
+-    }
+-    else {
+-        GFX_Flip();
+-    }
++    GFX_Flip();
+ }
+ 
+ static void MMIYOO_DestroyTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+@@ -302,7 +458,10 @@ static void MMIYOO_DestroyTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+     MMIYOO_TextureData *mmiyoo_texture = (MMIYOO_TextureData*)texture->driverdata;
+ 
+     if (mmiyoo_texture) {
+-        update_texture(texture, NULL, NULL, 0);
++        /* The freed buffer may be what is currently staged, and a later
++         * allocation could land on the same address and match by accident. */
++        GFX_InvalidateStagingCache();
++
+         if (mmiyoo_texture->data) {
+             SDL_free(mmiyoo_texture->data);
+         }
+@@ -407,9 +566,19 @@ SDL_RenderDriver MMIYOO_RenderDriver = {
+     .info = {
+         .name = "MMIYOO",
+         .flags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE,
++        /* SDL only considers texture_formats[0 .. num_texture_formats-1] when
++         * picking a format for a new texture — with num_texture_formats=2
++         * and ARGB8888 sitting at index [2], it was never actually in that
++         * range and SDL never saw it as available. Every texture (including
++         * alpha-bearing SDL_ttf glyph surfaces) silently downgraded to
++         * RGB565, discarding alpha before it ever reached our blit code —
++         * the real reason text backgrounds stayed solid black even after
++         * fixing the blend setup below. ARGB8888 listed first so SDL prefers
++         * it for anything with alpha; opaque sources still get matched to
++         * RGB565 (half the memory) via SDL's normal closest-format logic. */
+         .num_texture_formats = 2,
+         .texture_formats = {
+-            [0] = SDL_PIXELFORMAT_RGB565, [2] = SDL_PIXELFORMAT_ARGB8888,
++            [0] = SDL_PIXELFORMAT_ARGB8888, [1] = SDL_PIXELFORMAT_RGB565,
+         },
+         .max_texture_width = 800,
+         .max_texture_height = 600,
+diff --git a/sdl2/src/video/mmiyoo/SDL_event_mmiyoo.c b/sdl2/src/video/mmiyoo/SDL_event_mmiyoo.c
+index 114879a6..bff55372 100644
+--- a/sdl2/src/video/mmiyoo/SDL_event_mmiyoo.c
++++ b/sdl2/src/video/mmiyoo/SDL_event_mmiyoo.c
+@@ -109,10 +109,10 @@ const SDL_Scancode code[]={
+     SDLK_DOWN,          // DOWN
+     SDLK_LEFT,          // LEFT
+     SDLK_RIGHT,         // RIGHT
+-    SDLK_SPACE,         // A
+-    SDLK_LCTRL,         // B
+-    SDLK_LSHIFT,        // X
+-    SDLK_LALT,          // Y
++    SDLK_LALT,          // A (use weapon / fire)
++    SDLK_SPACE,         // B (jump)
++    SDLK_LSHIFT,        // X (select weapon / change ammo)
++    SDLK_LCTRL,         // Y (attack)
+     SDLK_e,             // L1
+     SDLK_t,             // R1
+     SDLK_TAB,           // L2
+diff --git a/sdl2/src/video/mmiyoo/SDL_opengles_mmiyoo.c b/sdl2/src/video/mmiyoo/SDL_opengles_mmiyoo.c
+index 6d6dba94..05dfb20b 100644
+--- a/sdl2/src/video/mmiyoo/SDL_opengles_mmiyoo.c
++++ b/sdl2/src/video/mmiyoo/SDL_opengles_mmiyoo.c
+@@ -131,8 +131,13 @@ SDL_GLContext glCreateContext(_THIS, SDL_Window *window)
+     printf(PREFIX"sdl2 eglMakeCurrent\n");
+     eglMakeCurrent(display, surface, surface, context);
+     
++    /* eglUpdateBufferSettings is a vendor extension not present in this
++     * device's real libEGL.so.1 (only in the repo's reference build) —
++     * and OpenClaw never actually creates a GL context (SDL_VIDEODRIVER
++     * =mmiyoo uses the framebuffer render path, see SDL_render_mmiyoo.c),
++     * so glCreateContext existing-but-incomplete is harmless; drop the call
++     * so linking against the real device libEGL succeeds. */
+     printf(PREFIX"sdl2 %s, %p %p %p\n", __func__, ppFunc, pfb_idx, pfb_vaddr);
+-    eglUpdateBufferSettings(display, surface, ppFunc, pfb_idx, pfb_vaddr);
+     return context;
+ }
+ 
+diff --git a/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.c b/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.c
+index 60efd872..60ea8002 100644
+--- a/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.c
++++ b/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.c
+@@ -71,6 +71,80 @@ static pthread_t thread;
+ static int is_running = 0;
+ static SDL_Surface *cvt = NULL;
+ 
++/* Every blit stages its source into the DMA buffer and flushes the cache over
++ * it - measured at ~2.9MB per frame across ~229 blits. Tile planes draw long
++ * runs of the same tile and repeated sprites share a texture, so the source is
++ * frequently byte-for-byte what was staged a moment ago. Each blit already
++ * waits for the GPU before returning, so the previous contents are known idle
++ * and can simply be reused. Invalidated whenever a texture's pixels change or a
++ * texture is freed (a later allocation could land on the same address and match
++ * by accident). */
++static const void *gfx_staged_pixels = NULL;
++static int gfx_staged_y = 0;
++static int gfx_staged_h = 0;
++static int gfx_staged_pitch = 0;
++
++#ifdef MMIYOO
++/* Ring of buffers so the CPU can stage and submit the next sprite while the
++ * GPU is still reading an earlier one, instead of waiting after every single
++ * blit (~200 blits/frame made that serialisation the dominant frame cost).
++ * A buffer is only reused once its own fence is waited on, which relies on
++ * the standard GPU-fence guarantee that signalling means *all* prior work
++ * against that submission - source reads included - has completed; that is
++ * the normal contract for exactly this pattern in every mainstream graphics
++ * API, and there is no vendor documentation here to say MI_GFX is different.
++ *
++ * This was briefly reverted to 1 (fully synchronous) after visible texture
++ * corruption in play, then on-device bisection (see PROJECT_STATUS.md) found
++ * the actual cause was an unrelated resource-preload change present in the
++ * same build - every test after that point was run with this ring reverted
++ * to 1, so "corruption gone" was never actually confirmed with the ring
++ * active again. Restored here on the strength of the fence-semantics
++ * argument above and the preload being the confirmed cause, but this exact
++ * combination (ring back on, preload gone) is a fresh claim, not something
++ * already re-tested on device - re-suspect this first if anything similar
++ * turns up. */
++#define GFX_STAGING_BUFFERS 4
++
++static struct {
++    MI_PHY phyAddr;
++    void *virAddr;
++    MI_U16 fence;
++    int fence_pending;
++} gfx_staging[GFX_STAGING_BUFFERS];
++
++static int gfx_staging_count = 0;   /* how many were actually allocated */
++static int gfx_staging_index = 0;   /* next buffer to stage into */
++static int gfx_staged_index = -1;   /* buffer holding gfx_staged_pixels */
++
++static void GFX_WaitStagingBuffer(int idx)
++{
++    if (gfx_staging[idx].fence_pending) {
++        MI_GFX_WaitAllDone(FALSE, gfx_staging[idx].fence);
++        gfx_staging[idx].fence_pending = 0;
++    }
++}
++
++void GFX_WaitAllStagingBuffers(void)
++{
++    int i;
++
++    for (i = 0; i < gfx_staging_count; i++) {
++        GFX_WaitStagingBuffer(i);
++    }
++}
++#else
++void GFX_WaitAllStagingBuffers(void) {}
++#endif
++
++void GFX_InvalidateStagingCache(void)
++{
++    gfx_staged_pixels = NULL;
++#ifdef MMIYOO
++    gfx_staged_index = -1;
++#endif
++}
++
+ extern MMIYOO_EventInfo evt;
+ 
+ static int MMIYOO_VideoInit(_THIS);
+@@ -93,11 +167,11 @@ static void *video_handler(void *threadid)
+             gfx.action = GFX_ACTION_NONE;
+ 
+ #ifdef MMIYOO
+-            My_QueueCopy(gfx.thread[0].texture, get_pixels(gfx.thread[0].texture), &gfx.thread[0].srt, &gfx.thread[0].drt);
++            My_QueueCopy(gfx.thread[0].texture, get_pixels(gfx.thread[0].texture), &gfx.thread[0].srt, &gfx.thread[0].drt, E_MI_GFX_MIRROR_NONE);
+ #endif
+ 
+ #ifdef TRIMUI
+-            My_QueueCopy(gfx.thread[0].texture, get_pixels(gfx.thread[0].texture), &gfx.thread[0].srt, &gfx.thread[0].drt);
++            My_QueueCopy(gfx.thread[0].texture, get_pixels(gfx.thread[0].texture), &gfx.thread[0].srt, &gfx.thread[0].drt, E_MI_GFX_MIRROR_NONE);
+ #endif
+             GFX_Flip();
+         }
+@@ -259,6 +333,8 @@ void disp_resize(void)
+ #ifdef MMIYOO
+ int fb_init(void)
+ {
++    int cc = 0;
++
+     MI_SYS_Init();
+     MI_GFX_Open();
+ 
+@@ -279,6 +355,28 @@ int fb_init(void)
+ 
+     MI_SYS_MMA_Alloc(NULL, TMP_SIZE, &gfx.overlay.phyAddr);
+     MI_SYS_Mmap(gfx.overlay.phyAddr, TMP_SIZE, &gfx.overlay.virAddr, TRUE);
++
++    /* Staging ring (see GFX_STAGING_BUFFERS). The first slot aliases the
++     * existing gfx.tmp allocation so behaviour is unchanged if the pool has no
++     * room for the rest - fewer buffers simply means less overlap, never
++     * incorrect output. */
++    gfx_staging[0].phyAddr = gfx.tmp.phyAddr;
++    gfx_staging[0].virAddr = gfx.tmp.virAddr;
++    gfx_staging[0].fence_pending = 0;
++    gfx_staging_count = 1;
++    for (cc = 1; cc < GFX_STAGING_BUFFERS; cc++) {
++        if (MI_SYS_MMA_Alloc(NULL, TMP_SIZE, &gfx_staging[cc].phyAddr) != 0) {
++            break;
++        }
++        if (MI_SYS_Mmap(gfx_staging[cc].phyAddr, TMP_SIZE, &gfx_staging[cc].virAddr, TRUE) != 0) {
++            MI_SYS_MMA_Free(gfx_staging[cc].phyAddr);
++            break;
++        }
++        gfx_staging[cc].fence_pending = 0;
++        gfx_staging_count++;
++    }
++    printf(PREFIX"staging buffers: %d of %d (%d kB each)\n",
++        gfx_staging_count, GFX_STAGING_BUFFERS, TMP_SIZE / 1024);
+     return 0;
+ }
+ 
+@@ -449,6 +547,14 @@ int draw_pen(const void *pixels, int width, int pitch)
+ }
+ 
+ int GFX_Copy(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch, int alpha, int rotate)
++{
++    /* Legacy whole-surface path: srcrect spans the full width here, so the old
++     * pitch/width inference is still valid as the bytes-per-pixel. */
++    return GFX_CopyEx(pixels, srcrect, dstrect, pitch, (srcrect.w > 0) ? (pitch / srcrect.w) : 4,
++        alpha, rotate, E_MI_GFX_MIRROR_NONE, 0, 0);
++}
++
++int GFX_CopyEx(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch, int src_bpp, int alpha, int rotate, int mirror, int use_colorkey, Uint32 colorkey)
+ {
+ #ifdef TRIMUI
+     int x = 0;
+@@ -477,33 +583,96 @@ int GFX_Copy(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch,
+ #endif
+ 
+ #ifdef MMIYOO
+-    int copy_it = 1;
+     MI_U16 u16Fence = 0;
+-    int is_rgb565 = (pitch / srcrect.w) == 2 ? 1 : 0;
++    int is_rgb565 = (src_bpp == 2);
++    int slot = 0;
++    int src_full_width = (src_bpp > 0) ? (pitch / src_bpp) : srcrect.w;
++    size_t copy_bytes = (size_t)srcrect.h * (size_t)pitch;
+ 
+     if (pixels == NULL) {
+         return -1;
+     }
+ 
+-    if (copy_it) {
+-        memcpy(gfx.tmp.virAddr, pixels, srcrect.h * pitch);
++    /* The staging buffer is exactly one framebuffer in size, so a source taller
++     * than the screen would run off the end of the DMA region. */
++    if (copy_bytes > (size_t)TMP_SIZE) {
++        return -1;
++    }
++
++    /* Stage only the rows the source rect covers, starting at its top edge; the
++     * horizontal offset is handled by the stride and rt.s32Xpos below. This
++     * always copied from the texture's first row while still telling MI_GFX to
++     * read at srcrect.y - consistent only while every blit covered a whole
++     * texture, which stopped being true once My_QueueCopy started clipping
++     * partially off-screen sprites. */
++    if ((gfx_staged_index >= 0) && (gfx_staged_pixels == pixels) && (gfx_staged_y == srcrect.y) &&
++        (gfx_staged_h == srcrect.h) && (gfx_staged_pitch == pitch)) {
++        /* Identical to what is already staged - blit straight from that buffer
++         * again. Only reading it, so an in-flight fence on it is no obstacle. */
++        slot = gfx_staged_index;
++    }
++    else {
++        slot = gfx_staging_index;
++        gfx_staging_index = (gfx_staging_index + 1) % gfx_staging_count;
++
++        /* This buffer's previous blit must have finished before overwriting it. */
++        GFX_WaitStagingBuffer(slot);
++
++        memcpy(gfx_staging[slot].virAddr, (const uint8_t *)pixels + ((size_t)srcrect.y * (size_t)pitch), copy_bytes);
++        MI_SYS_FlushInvCache(gfx_staging[slot].virAddr, copy_bytes);
++
++        gfx_staged_pixels = pixels;
++        gfx_staged_y = srcrect.y;
++        gfx_staged_h = srcrect.h;
++        gfx_staged_pitch = pitch;
++        gfx_staged_index = slot;
+     }
+ 
+     gfx.hw.opt.u32GlobalSrcConstColor = 0;
+     gfx.hw.opt.eRotate = rotate;
+-    gfx.hw.opt.eSrcDfbBldOp = E_MI_GFX_DFB_BLD_ONE;
+-    gfx.hw.opt.eDstDfbBldOp = 0;
+-    gfx.hw.opt.eDFBBlendFlag = 0;
++    gfx.hw.opt.eMirror = mirror;
++    if (is_rgb565) {
++        /* No alpha channel in this format — plain opaque copy, with an
++         * optional hardware colorkey cutout (see
++         * ActorRenderComponent/Image::CreatePcxImage on the engine side):
++         * RGB565 sprites that only need a single transparent background
++         * color, rather than real graduated alpha, skip the ARGB8888
++         * promotion entirely and use MI_GFX's own colorkey matching
++         * instead — half the texture memory for the vast majority of the
++         * game's sprite art, which is exactly this kind of cutout. */
++        gfx.hw.opt.eSrcDfbBldOp = E_MI_GFX_DFB_BLD_ONE;
++        gfx.hw.opt.eDstDfbBldOp = 0;
++        gfx.hw.opt.eDFBBlendFlag = use_colorkey ? E_MI_GFX_DFB_BLEND_SRC_COLORKEY : 0;
++        gfx.hw.opt.stSrcColorKeyInfo.bEnColorKey = use_colorkey ? TRUE : FALSE;
++        gfx.hw.opt.stSrcColorKeyInfo.eCKeyOp = E_MI_GFX_RGB_OP_EQUAL;
++        gfx.hw.opt.stSrcColorKeyInfo.eCKeyFmt = E_MI_GFX_FMT_RGB565;
++        gfx.hw.opt.stSrcColorKeyInfo.stCKeyVal.u32ColorStart = colorkey;
++        gfx.hw.opt.stSrcColorKeyInfo.stCKeyVal.u32ColorEnd = colorkey;
++    } else {
++        /* ARGB8888 — standard "source over" alpha blend using the source's
++         * own per-pixel alpha. Previously always did an opaque SRC-replaces-
++         * DST copy (BLD_ONE/0/NOFX) regardless of format, ignoring alpha
++         * entirely: SDL2_ttf glyph surfaces are ARGB8888 with alpha=0 on
++         * background pixels and RGB=0 (black) there, so what should have
++         * been transparent showed up as solid black rectangles behind every
++         * bit of text. For fully-opaque sprites (alpha=255 everywhere) this
++         * reduces to the same opaque copy, so it's safe for every ARGB8888
++         * texture, not just text. */
++        gfx.hw.opt.eSrcDfbBldOp = E_MI_GFX_DFB_BLD_SRCALPHA;
++        gfx.hw.opt.eDstDfbBldOp = E_MI_GFX_DFB_BLD_INVSRCALPHA;
++        gfx.hw.opt.eDFBBlendFlag = E_MI_GFX_DFB_BLEND_ALPHACHANNEL;
++        gfx.hw.opt.stSrcColorKeyInfo.bEnColorKey = FALSE;
++    }
+ 
+     gfx.hw.src.rt.s32Xpos = srcrect.x;
+-    gfx.hw.src.rt.s32Ypos = srcrect.y;
++    gfx.hw.src.rt.s32Ypos = 0; /* rows were staged starting at srcrect.y above */
+     gfx.hw.src.rt.u32Width = srcrect.w;
+     gfx.hw.src.rt.u32Height = srcrect.h;
+-    gfx.hw.src.surf.u32Width = srcrect.w;
++    gfx.hw.src.surf.u32Width = src_full_width;
+     gfx.hw.src.surf.u32Height = srcrect.h;
+     gfx.hw.src.surf.u32Stride = pitch;
+     gfx.hw.src.surf.eColorFmt = is_rgb565 ? E_MI_GFX_FMT_RGB565 : E_MI_GFX_FMT_ARGB8888;
+-    gfx.hw.src.surf.phyAddr = gfx.tmp.phyAddr;
++    gfx.hw.src.surf.phyAddr = gfx_staging[slot].phyAddr;
+ 
+     gfx.hw.dst.rt.s32Xpos = 0;
+     gfx.hw.dst.rt.s32Ypos = 0;
+@@ -519,16 +688,60 @@ int GFX_Copy(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch,
+     gfx.hw.dst.surf.eColorFmt = E_MI_GFX_FMT_ARGB8888;
+     gfx.hw.dst.surf.phyAddr = gfx.fb.phyAddr + (FB_W * gfx.vinfo.yoffset * FB_BPP);
+ 
+-    MI_SYS_FlushInvCache(gfx.tmp.virAddr, pitch * srcrect.h);
++    /* Cache flush happens with the staging copy above, so a reused staging
++     * buffer skips it too - it is already coherent from when it was written. */
+     MI_GFX_BitBlit(&gfx.hw.src.surf, &gfx.hw.src.rt, &gfx.hw.dst.surf, &gfx.hw.dst.rt, &gfx.hw.opt, &u16Fence);
++
++    /* Deliberately not waiting here. The blit is recorded against the buffer it
++     * reads from and waited for only when that buffer is reused, or when
++     * GFX_Flip needs the frame complete. */
++    gfx_staging[slot].fence = u16Fence;
++    gfx_staging[slot].fence_pending = 1;
++    return 0;
++#endif
++}
++
++/* SDL_RenderFillRect(s)/SDL_RenderClear support — direct hardware solid fill
++ * onto the framebuffer via MI_GFX_QuickFill, same destination-surface setup
++ * as GFX_Copy's blit path. color is packed ARGB8888 regardless of the
++ * framebuffer's actual color format, per MI_GFX_QuickFill's documented
++ * behavior (shifted into place internally).
++ *
++ * Unlike MI_GFX_BitBlit, QuickFill takes no MI_GFX_Opt_t and so cannot
++ * rotate — but every blit in this driver applies E_MI_GFX_ROTATE_180
++ * (the panel is mounted upside down relative to logical/SDL coordinates),
++ * so the destination rect must be rotated 180 degrees around the
++ * framebuffer center by hand before filling, or fills land mirrored. */
++int GFX_FillRect(SDL_Rect dstrect, Uint32 color)
++{
++#ifdef MMIYOO
++    MI_U16 u16Fence = 0;
++
++    gfx.hw.dst.rt.s32Xpos = FB_W - dstrect.x - dstrect.w;
++    gfx.hw.dst.rt.s32Ypos = FB_H - dstrect.y - dstrect.h;
++    gfx.hw.dst.rt.u32Width = dstrect.w;
++    gfx.hw.dst.rt.u32Height = dstrect.h;
++    gfx.hw.dst.surf.u32Width = FB_W;
++    gfx.hw.dst.surf.u32Height = FB_H;
++    gfx.hw.dst.surf.u32Stride = FB_W * FB_BPP;
++    gfx.hw.dst.surf.eColorFmt = E_MI_GFX_FMT_ARGB8888;
++    gfx.hw.dst.surf.phyAddr = gfx.fb.phyAddr + (FB_W * gfx.vinfo.yoffset * FB_BPP);
++
++    MI_GFX_QuickFill(&gfx.hw.dst.surf, &gfx.hw.dst.rt, color, &u16Fence);
+     MI_GFX_WaitAllDone(FALSE, u16Fence);
+     return 0;
++#else
++    return -1;
+ #endif
+ }
+ 
+ void GFX_Flip(void)
+ {
+ #ifdef MMIYOO
++    /* Blits no longer wait individually, so make sure every one of them has
++     * landed before showing the buffer they were drawing into. */
++    GFX_WaitAllStagingBuffers();
++
+     ioctl(gfx.fb_dev, FBIOPAN_DISPLAY, &gfx.vinfo);
+     gfx.vinfo.yoffset ^= FB_H;
+ #endif
+diff --git a/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.h b/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.h
+index 195d2c6f..3b3ffee7 100644
+--- a/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.h
++++ b/sdl2/src/video/mmiyoo/SDL_video_mmiyoo.h
+@@ -144,13 +144,27 @@ typedef struct _GFX {
+ 
+ void GFX_Clear(void);
+ void GFX_Flip(void);
++
++/* Drops GFX_CopyEx's memo of what is currently staged in the DMA buffer. Must
++ * be called whenever a texture's pixels change, and whenever one is freed - a
++ * later allocation can reuse the address and would otherwise match by accident. */
++void GFX_InvalidateStagingCache(void);
++/* Blocks until every outstanding blit has completed. */
++void GFX_WaitAllStagingBuffers(void);
+ int GFX_Copy(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch, int alpha, int rotate);
++/* src_bpp is the source texture's bytes per pixel (2 = RGB565, 4 = ARGB8888).
++ * It used to be inferred as pitch/srcrect.w, which only holds when the source
++ * rect spans the full texture width - no longer true now that My_QueueCopy
++ * clips partially off-screen blits, and getting it wrong silently reinterprets
++ * an RGB565 texture as ARGB8888. */
++int GFX_CopyEx(const void *pixels, SDL_Rect srcrect, SDL_Rect dstrect, int pitch, int src_bpp, int alpha, int rotate, int mirror, int use_colorkey, Uint32 colorkey);
++int GFX_FillRect(SDL_Rect dstrect, Uint32 color);
+ 
+ int fb_init(void);
+ int fb_uninit(void);
+ 
+ int draw_pen(const void *pixels, int width, int pitch);
+-int My_QueueCopy(SDL_Texture *texture, const void *pixels, const SDL_Rect *srcrect, const SDL_FRect *dstrect);
++int My_QueueCopy(SDL_Texture *texture, const void *pixels, const SDL_Rect *srcrect, const SDL_FRect *dstrect, int mirror);
+ const void* get_pixels(void *chk);
+ 
+ #endif

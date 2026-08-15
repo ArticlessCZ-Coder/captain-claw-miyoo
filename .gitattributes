@@ -1,0 +1,3 @@
+# core.autocrlf=true would check these out with CRLF, and the device's /bin/sh
+# fails on "#!/bin/sh\r". Keep everything that runs on the Miyoo as LF.
+*.sh text eol=lf

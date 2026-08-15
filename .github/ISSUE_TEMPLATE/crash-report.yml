@@ -1,0 +1,70 @@
+name: Crash report
+description: The game closed by itself while playing
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The console writes a crash report to the SD card:
+
+        `Roms/PORTS/Games/Captain Claw/crashlogs/crash-<date>-report.txt`
+
+        **Please attach the newest one** — see
+        [docs/REPORTING_CRASHES.md](../blob/main/docs/REPORTING_CRASHES.md).
+        Without it we can only guess.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: Crash report file
+      description: Drag the crash-<date>-report.txt file into this box, or paste its contents.
+      placeholder: Drop the file here...
+    validations:
+      required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The `build:` line from the top of the report, or the release you downloaded.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What was happening
+      description: Where in the game, and what you were doing. Does it happen again in the same place?
+      placeholder: |
+        Level 1, right after the first soldier attacks me.
+        Happens almost every time I get hit there.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Miyoo Mini
+        - Miyoo Mini Plus
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: OnionOS version
+      placeholder: "4.4.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Full log (optional)
+      description: The matching crash-<date>-log.txt, if you still have it. Bigger, but sometimes shows more.
+    validations:
+      required: false
