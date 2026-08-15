@@ -99,6 +99,25 @@ See [docs/BUILDING.md](docs/BUILDING.md). Everything cross-compiles in Docker;
 the one manual step is pulling three libraries off your own console, which are
 deliberately not redistributed here.
 
+## How this was made
+
+The port was built by [ArticlessCZ-Coder](https://github.com/ArticlessCZ-Coder)
+together with [Claude](https://claude.com/claude-code) (Anthropic), which did
+most of the engineering: the cross-build against the device's own SDL2, the
+render and audio backend work, the memory reductions needed to fit a 100 MB
+device, and the crash and hang diagnostics.
+
+All of it was directed and verified on real hardware by the maintainer, and that
+part was not a formality — most of the bugs that got fixed were found by playing
+the game rather than by reading the code, several of them right after a
+confident "this should work now". The first public release could not start from
+a clean install, and it took a user following the published instructions to find
+out.
+
+The [engineering log](docs/ENGINEERING_LOG.md) keeps the wrong turns alongside
+the fixes, including the diagnoses that were confidently wrong until a
+measurement said otherwise.
+
 ## Credits and licences
 
 - [OpenClaw](https://github.com/pjasicek/OpenClaw) by Petr Jašíček and
