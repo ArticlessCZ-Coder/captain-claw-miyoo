@@ -103,7 +103,8 @@ deliberately not redistributed here.
 
 - [OpenClaw](https://github.com/pjasicek/OpenClaw) by Petr Jašíček and
   contributors — GPLv3. The engine changes made for this port are published at
-  the fork linked below, as that licence requires.
+  [openclaw-miyoo](https://github.com/ArticlessCZ-Coder/openclaw-miyoo), as that
+  licence requires.
 - [sdl2_miyoo](https://github.com/XK9274/sdl2_miyoo) by XK9274, itself based on
   Steward Fu's Miyoo SDL2 — zlib. Our changes to it are in
   [`patches/sdl2-miyoo-openclaw.patch`](patches/sdl2-miyoo-openclaw.patch).
