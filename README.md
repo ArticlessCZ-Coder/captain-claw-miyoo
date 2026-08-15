@@ -99,6 +99,10 @@ See [docs/BUILDING.md](docs/BUILDING.md). Everything cross-compiles in Docker;
 the one manual step is pulling three libraries off your own console, which are
 deliberately not redistributed here.
 
+## Version history
+
+[CHANGELOG.md](CHANGELOG.md) — what changed in each version, and why.
+
 ## How this was made
 
 The port was built by [ArticlessCZ-Coder](https://github.com/ArticlessCZ-Coder)

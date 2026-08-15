@@ -87,6 +87,12 @@ for pattern in $PATTERNS; do
 done
 [ "$FOUND" = "0" ] || exit 1
 
+if [ -n "$TAG" ] && ! grep -q "^## ${TAG#v}\$" "$PUBLIC_DIR/captain-claw-miyoo/CHANGELOG.md" 2>/dev/null; then
+    echo "warning: CHANGELOG.md has no '## ${TAG#v}' section." >&2
+    echo "         Release notes are written there first and copied to GitHub," >&2
+    echo "         not the other way round - the release page is not in a clone." >&2
+fi
+
 MESSAGE="${TAG:+Release $TAG}"
 MESSAGE="${MESSAGE:-Sync from development}"
 
