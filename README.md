@@ -34,6 +34,18 @@ supports one death effect per level, and level 1 has both water and spikes), and
 a handful of decorative objects are skipped because their game logic is not
 implemented upstream (`Sign`, `Stalactite`, `Shake`, …).
 
+### In progress
+
+Done and running on the device, not in a release yet:
+
+- **Claw no longer slides off the edges of platforms.** His collision foot was a
+  circle, so once past a corner it rolled him off; it is a flat sole now, as the
+  1997 original collided.
+- **Attacks no longer swallow input.** Firing held the controls for the whole
+  animation — 500 ms of the pistol's 700 — so ducking under a shot already on
+  screen was impossible however early you reacted. Control comes back once the
+  shot is away; the rate of attack is unchanged.
+
 ---
 
 ## Installing
