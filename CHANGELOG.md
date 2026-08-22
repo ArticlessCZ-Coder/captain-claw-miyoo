@@ -6,6 +6,69 @@ report, and crash addresses only resolve against the binary that produced them.
 
 Only 1.2.3 onwards were released publicly.
 
+Version numbers track *releases*, not commits. Local work accumulates under
+Unreleased for as long as it takes — a hundred test builds still add up to one
+version bump. When a release is actually wanted, Unreleased becomes the next
+number after the last public one and is passed to `tools/sync_public.sh`, which
+is the only thing that decides a version. Nothing derives it automatically.
+
+Do not confuse this with the build ID stamped into each binary
+(`git describe --always --tags`, e.g. `v1.2.4-2-gc3e1cc79`). That identifies the
+exact binary a crash report came from and is *meant* to change every build; its
+commit count is not a version.
+
+## 1.2.5
+
+**A movement and combat pass.** Everything here was found by playing on the
+device and measured before it was changed; the numbers quoted are from the
+device's own logs.
+
+- Claw no longer slides off the edges of platforms. His collision body was a
+  capsule, so his foot was a circle as wide as his shoulders; once his centre
+  passed a platform corner it rested on that corner instead of the flat top and
+  rolled him off. The foot is now a flat sole, as the 1997 original collided.
+  Its lower corners are chamfered, which is what lets him cross the seams
+  between ground tiles — a square sole caught on them and left him running on
+  the spot
+- Attacks no longer swallow input. Firing or swinging held the controls for the
+  whole animation, long after the shot had left: on the pistol that is 500 ms of
+  the 700 ms it runs, so ducking under a shot already on screen was impossible
+  however early you reacted. Control now returns once the attack has landed,
+  while the rate of attack stays exactly what it was — the two were the same
+  value in the engine and are now separate
+- Claw teeters on the lip of a platform, as the 1997 original does, and holds
+  the pose until the player steps back or drops off. The animation and its sound
+  were in `CLAW.REZ` and already loaded; nothing had ever played them.
+  **Partial** — the wobble starts later than in the original, where Claw stands
+  with a whole foot out over the edge. Usable, not finished
+- The sword is worth what the stance is worth: double damage in the air, half
+  crouched, as the 1997 original scores it. The engine only ever had the
+  crouched case — a jumping swipe counted exactly like one from standing
+- An attack pressed just before landing is no longer swallowed. It used to start
+  its animation and be wiped by the landing before the hitbox ever appeared, so
+  the press vanished with no swing and no sound; the swing is now carried over
+  and finished on the ground. The same landing also left a cooldown running
+  against an attack that no longer existed, which ate the *next* press too
+- One enemy can no longer hurt you twice in quick succession. Enemies damage you
+  both by swinging and by a contact aura that pulses on its own clock, and the
+  aura fired the instant the post-hit invulnerability expired; an aura tick from
+  an enemy that has already hurt you now waits for its next attack cycle. Other
+  enemies standing around you are unaffected
+- Killed enemies are thrown clear on an arc — up and away from Claw, then down
+  off the screen — instead of sliding to the bottom right corner at a fixed
+  speed regardless of where they were killed from
+- **Standing too close to an enemy no longer makes the sword miss** — a
+  deliberate change from the 1997 original, which behaved this way and was the
+  harder for it. The swing was a 50 px box starting 35 px in front of Claw, and
+  an enemy body is 40 px wide, so once Claw stood on top of one the swing began
+  past it and passed straight through. The box now reaches back to his own body.
+  Its forward reach is unchanged
+- Weapon select moved from X to SELECT, which nothing used. X is now free
+- Switching weapons makes a sound, the same click the menu uses, as the original
+  does. It never had one: the HUD's ammo-change handler is an empty function and
+  nothing else along that path said anything. The click is warmed during level
+  loading now that it is no longer a menu-only sound
+
 ## 1.2.4
 
 **Fixed a release blocker: the game could not start from a clean install.** The

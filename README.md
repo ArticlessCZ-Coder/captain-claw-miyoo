@@ -34,17 +34,20 @@ supports one death effect per level, and level 1 has both water and spikes), and
 a handful of decorative objects are skipped because their game logic is not
 implemented upstream (`Sign`, `Stalactite`, `Shake`, …).
 
-### In progress
+### On purpose, not like the original
 
-Done and running on the device, not in a release yet:
+One thing here is deliberately *not* how the 1997 game behaved:
 
-- **Claw no longer slides off the edges of platforms.** His collision foot was a
-  circle, so once past a corner it rolled him off; it is a flat sole now, as the
-  1997 original collided.
-- **Attacks no longer swallow input.** Firing held the controls for the whole
-  animation — 500 ms of the pistol's 700 — so ducking under a shot already on
-  screen was impossible however early you reacted. Control comes back once the
-  shot is away; the rate of attack is unchanged.
+- **Standing on top of an enemy no longer makes the sword miss.** The swing is a
+  box in front of Claw, and in the original it started far enough out that an
+  enemy he was stood on — closer than the box began — could be swung through
+  without being touched. Measured here: the box covered 35–85 px ahead and an
+  enemy body is 40 px wide. It now reaches back to Claw's own body, so close
+  quarters connect. Its forward reach is unchanged, and enemies behind him are
+  still safe.
+
+Everything else aims at the original's behaviour, including the things it did
+that made the game harder.
 
 ---
 
@@ -79,9 +82,9 @@ own folder is modified.
 | B | Jump |
 | Y | Attack (sword) |
 | A | Use weapon (pistol / dynamite / magic) |
-| X | Switch weapon |
+| X | Unused — reserved for picking objects up |
 | START | Pause menu; also confirms in menus |
-| SELECT | Back / cancel in menus |
+| SELECT | Switch weapon; back / cancel in menus |
 | MENU (hold) | Quit to the launcher, saving settings |
 
 ---
